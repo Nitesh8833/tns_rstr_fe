@@ -12,8 +12,11 @@ Output (degrees workbook):
 
 Notes:
  - taxonomies/specialities/languages show the *single most frequent* value found
-   in the sheet (empty if none). The corresponding *_count is the number of occurrences.
+   in the sheet (empty if none) and the corresponding *_count is the number of occurrences.
  - taxonomy extraction uses a regex that matches codes like 207RG0000X or 2085R0200X.
+ - taxonomy/speciality/language cell values are written only once per sheet:
+   they appear on the first degree row for that sheet; subsequent rows from the
+   same sheet have those fields blank/zero.
 """
 import argparse
 import logging
@@ -162,6 +165,10 @@ def collect_per_sheet(
       taxonomy_column_name, taxonomies, taxonomies_count,
       speciality_column_name, specialities, specialities_count,
       language_column_name, languages, languages_count
+
+    Taxonomy / speciality / language values will be shown only once per sheet
+    (on the first degree row for that sheet) and blank for subsequent degree rows
+    from that same sheet.
     """
     logger = logging.getLogger("collect_degrees")
     logger.setLevel(logging.INFO)
@@ -399,7 +406,31 @@ def collect_per_sheet(
                 file_has_data = True
 
             # append one output row per distinct degree (preserve deterministic order)
+            # ensure taxonomy/speciality/language appear only on first degree row for this sheet
+            first_row_for_sheet = True
             for key, meta in sorted(per_sheet.items(), key=lambda x: x[0]):
+                if first_row_for_sheet:
+                    tax_field = tax_val
+                    tax_count_field = int(tax_val_count)
+                    spec_field = spec_val
+                    spec_count_field = int(spec_val_count)
+                    lang_field = lang_val
+                    lang_count_field = int(lang_val_count)
+                    tax_colname_field = tax_cols_str
+                    spec_colname_field = spec_cols_str
+                    lang_colname_field = lang_cols_str
+                    first_row_for_sheet = False
+                else:
+                    tax_field = ""
+                    tax_count_field = 0
+                    spec_field = ""
+                    spec_count_field = 0
+                    lang_field = ""
+                    lang_count_field = 0
+                    tax_colname_field = ""
+                    spec_colname_field = ""
+                    lang_colname_field = ""
+
                 out_rows.append({
                     "degree_column_name": deg_cols_str,
                     "degree": meta["display"],
@@ -407,15 +438,15 @@ def collect_per_sheet(
                     "filename": f.name,
                     "sheet": sheet,
                     "sources": "; ".join(sorted(meta["sources"])),
-                    "taxonomy_column_name": tax_cols_str,
-                    "taxonomies": tax_val,
-                    "taxonomies_count": tax_val_count,
-                    "speciality_column_name": spec_cols_str,
-                    "specialities": spec_val,
-                    "specialities_count": spec_val_count,
-                    "language_column_name": lang_cols_str,
-                    "languages": lang_val,
-                    "languages_count": lang_val_count,
+                    "taxonomy_column_name": tax_colname_field,
+                    "taxonomies": tax_field,
+                    "taxonomies_count": tax_count_field,
+                    "speciality_column_name": spec_colname_field,
+                    "specialities": spec_field,
+                    "specialities_count": spec_count_field,
+                    "language_column_name": lang_colname_field,
+                    "languages": lang_field,
+                    "languages_count": lang_count_field,
                 })
             logger.info(f"    Found {len(per_sheet)} distinct degree values in sheet.")
 
