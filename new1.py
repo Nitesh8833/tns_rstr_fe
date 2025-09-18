@@ -5,12 +5,15 @@ collect_degrees_per_sheet.py
 Scan a folder of Excel workbooks and extract unique degree/taxonomy/speciality/language values sheet-by-sheet.
 
 Output (degrees workbook):
- - degree, degree_count, filename, sheet, columns, sources,
-   taxonomies, taxonomies_count, specialities, specialities_count,
-   languages, languages_count
+ - degree_column_name, degree, degree_count, filename, sheet, sources,
+   taxonomy_column_name, taxonomies, taxonomies_count,
+   speciality_column_name, specialities, specialities_count,
+   language_column_name, languages, languages_count
 
-taxonomies / specialities / languages: semicolon-separated "value(count)" entries found in the sheet.
-*_count fields: integer total occurrences (sum of counts) for that sheet.
+Notes:
+ - taxonomies/specialities/languages show the *single most frequent* value found
+   in the sheet (empty if none). The corresponding *_count is the number of occurrences.
+ - taxonomy extraction uses a regex that matches codes like 207RG0000X or 2085R0200X.
 """
 import argparse
 import logging
@@ -155,9 +158,10 @@ def collect_per_sheet(
     """
     Scan files and return df_out and run_info.
     df_out columns:
-      degree, degree_count, filename, sheet, columns, sources,
-      taxonomies, taxonomies_count, specialities, specialities_count,
-      languages, languages_count
+      degree_column_name, degree, degree_count, filename, sheet, sources,
+      taxonomy_column_name, taxonomies, taxonomies_count,
+      speciality_column_name, specialities, specialities_count,
+      language_column_name, languages, languages_count
     """
     logger = logging.getLogger("collect_degrees")
     logger.setLevel(logging.INFO)
@@ -180,7 +184,7 @@ def collect_per_sheet(
     exclude_norm = [e.casefold().strip() for e in (exclude_list or []) if e and e.strip()]
 
     # regex to capture taxonomy codes like examples: 207RG0000X or 2085R0200X
-    TAX_CODE_RE = re.compile(r'\b(?:\d{3}[A-Z]{2}\d{4}X|\d{4}[A-Z]\d{4}X)\b', flags=re.IGNORECASE)
+    TAX_CODE_RE = re.compile(r'\b[0-9]{3}[A-Z]{2}[0-9]{4}X\b|\b[0-9]{4}[A-Z][0-9]{4}X\b', flags=re.IGNORECASE)
 
     patterns = ("*.xlsx", "*.xlsm")
     files = []
@@ -254,85 +258,99 @@ def collect_per_sheet(
                     logger.warning(f"    Failed to read sheet {sheet}: {ex2}")
                     continue
 
-            # ---- build taxonomy counts (sheet-level) ----
+            # -- collect taxonomy counts (only codes that match TAX_CODE_RE) --
             taxonomy_counts: Dict[str, int] = {}
+            tax_columns_found: List[str] = []
             for tax_col in tax_cols:
                 found = None
                 for actual_col in df_sheet.columns:
-                    if any(exc in str(actual_col).casefold() for exc in exclude_norm):
+                    actual_norm = str(actual_col).casefold().strip()
+                    if any(exc in actual_norm for exc in exclude_norm):
                         continue
-                    if str(actual_col).casefold().strip() == str(tax_col).casefold().strip():
+                    if actual_norm == str(tax_col).casefold().strip():
                         found = actual_col
                         break
                 if found is None:
                     continue
+                tax_columns_found.append(str(found))
                 try:
                     series = df_sheet[found].astype(str).fillna("").apply(lambda x: normalize_text(x))
                 except Exception:
                     continue
-                vals = [v for v in series if v != "" and v.lower() != "nan"]
-                for v in vals:
-                    # only extract taxonomy codes that match the regex; ignore other text
-                    # do uppercase to normalize code format
-                    codes = TAX_CODE_RE.findall(v.upper())
+                for v in series:
+                    if not v or v.lower() == "nan":
+                        continue
+                    # find all codes in the cell, normalize to uppercase
+                    codes = [c.upper() for c in TAX_CODE_RE.findall(v)]
                     for code in codes:
                         taxonomy_counts[code] = taxonomy_counts.get(code, 0) + 1
 
-            # ---- build speciality counts (sheet-level) ----
+            # -- collect speciality counts --
             speciality_counts: Dict[str, int] = {}
+            spec_columns_found: List[str] = []
             for spec_col in spec_cols:
                 found = None
                 for actual_col in df_sheet.columns:
-                    if any(exc in str(actual_col).casefold() for exc in exclude_norm):
+                    actual_norm = str(actual_col).casefold().strip()
+                    if any(exc in actual_norm for exc in exclude_norm):
                         continue
-                    if str(actual_col).casefold().strip() == str(spec_col).casefold().strip():
+                    if actual_norm == str(spec_col).casefold().strip():
                         found = actual_col
                         break
                 if found is None:
                     continue
+                spec_columns_found.append(str(found))
                 try:
                     series = df_sheet[found].astype(str).fillna("").apply(lambda x: normalize_text(x))
                 except Exception:
                     continue
-                vals = [v for v in series if v != "" and v.lower() != "nan"]
-                for v in vals:
+                for v in series:
+                    if not v or v.lower() == "nan":
+                        continue
                     speciality_counts[v] = speciality_counts.get(v, 0) + 1
 
-            # ---- build language counts (sheet-level) ----
+            # -- collect language counts --
             language_counts: Dict[str, int] = {}
+            lang_columns_found: List[str] = []
             for lang_col in lang_cols:
                 found = None
                 for actual_col in df_sheet.columns:
-                    if any(exc in str(actual_col).casefold() for exc in exclude_norm):
+                    actual_norm = str(actual_col).casefold().strip()
+                    if any(exc in actual_norm for exc in exclude_norm):
                         continue
-                    if str(actual_col).casefold().strip() == str(lang_col).casefold().strip():
+                    if actual_norm == str(lang_col).casefold().strip():
                         found = actual_col
                         break
                 if found is None:
                     continue
+                lang_columns_found.append(str(found))
                 try:
                     series = df_sheet[found].astype(str).fillna("").apply(lambda x: normalize_text(x))
                 except Exception:
                     continue
-                vals = [v for v in series if v != "" and v.lower() != "nan"]
-                for v in vals:
-                    # normalize language display to Title Case (English, Hindi, etc.)
+                for v in series:
+                    if not v or v.lower() == "nan":
+                        continue
+                    # normalize language to Title Case
                     lang_normal = v.strip().title()
                     language_counts[lang_normal] = language_counts.get(lang_normal, 0) + 1
 
-            # ---- build degree mapping (per-sheet) ----
+            # -- build degree mapping (per-sheet) --
             per_sheet: Dict[str, Dict[str, object]] = {}
+            degree_columns_found: List[str] = []
             for deg_col in deg_cols:
                 found_col_name = None
                 for actual_col in df_sheet.columns:
-                    if any(exc in str(actual_col).casefold() for exc in exclude_norm):
+                    actual_norm = str(actual_col).casefold().strip()
+                    if any(exc in actual_norm for exc in exclude_norm):
                         continue
-                    if str(actual_col).casefold().strip() == str(deg_col).casefold().strip():
+                    if actual_norm == str(deg_col).casefold().strip():
                         found_col_name = actual_col
                         break
                 if found_col_name is None:
                     logger.debug(f"    Exact header '{deg_col}' not found in {f.name}|{sheet}; skipping.")
                     continue
+                degree_columns_found.append(str(found_col_name))
                 try:
                     series = df_sheet[found_col_name].astype(str).fillna("").apply(lambda x: normalize_text(x))
                 except Exception as ex:
@@ -357,21 +375,23 @@ def collect_per_sheet(
                 logger.info(f"    No non-empty degree/taxonomy/speciality/language values found in sheet.")
                 continue
 
-            # prepare aggregated taxonomy/speciality/language strings for sheet
-            def agg_to_str(d: Dict[str, int]) -> str:
+            # choose the most frequent taxonomy / speciality / language for the sheet
+            def choose_most_common(d: Dict[str, int]) -> Tuple[str, int]:
                 if not d:
-                    return ""
-                items = [f"{k}({v})" for k, v in sorted(d.items(), key=lambda x: x[0].lower())]
-                return "; ".join(items)
+                    return "", 0
+                # pick highest count, tie-breaker: lexicographic
+                items = sorted(d.items(), key=lambda x: (-x[1], x[0]))
+                return items[0][0], int(items[0][1])
 
-            tax_str = agg_to_str(taxonomy_counts)
-            spec_str = agg_to_str(speciality_counts)
-            lang_str = agg_to_str(language_counts)
+            tax_val, tax_val_count = choose_most_common(taxonomy_counts)
+            spec_val, spec_val_count = choose_most_common(speciality_counts)
+            lang_val, lang_val_count = choose_most_common(language_counts)
 
-            # compute totals (sums)
-            tax_total = sum(taxonomy_counts.values()) if taxonomy_counts else 0
-            spec_total = sum(speciality_counts.values()) if speciality_counts else 0
-            lang_total = sum(language_counts.values()) if language_counts else 0
+            # column name strings (comma-separated)
+            deg_cols_str = ", ".join(sorted(set(degree_columns_found))) if degree_columns_found else ""
+            tax_cols_str = ", ".join(sorted(set(tax_columns_found))) if tax_columns_found else ""
+            spec_cols_str = ", ".join(sorted(set(spec_columns_found))) if spec_columns_found else ""
+            lang_cols_str = ", ".join(sorted(set(lang_columns_found))) if lang_columns_found else ""
 
             # mark sheet/file stats
             if per_sheet:
@@ -381,18 +401,21 @@ def collect_per_sheet(
             # append one output row per distinct degree (preserve deterministic order)
             for key, meta in sorted(per_sheet.items(), key=lambda x: x[0]):
                 out_rows.append({
+                    "degree_column_name": deg_cols_str,
                     "degree": meta["display"],
                     "degree_count": meta["count"],
                     "filename": f.name,
                     "sheet": sheet,
-                    "columns": ", ".join(sorted(meta["columns"])),
                     "sources": "; ".join(sorted(meta["sources"])),
-                    "taxonomies": tax_str,
-                    "taxonomies_count": int(tax_total),
-                    "specialities": spec_str,
-                    "specialities_count": int(spec_total),
-                    "languages": lang_str,
-                    "languages_count": int(lang_total),
+                    "taxonomy_column_name": tax_cols_str,
+                    "taxonomies": tax_val,
+                    "taxonomies_count": tax_val_count,
+                    "speciality_column_name": spec_cols_str,
+                    "specialities": spec_val,
+                    "specialities_count": spec_val_count,
+                    "language_column_name": lang_cols_str,
+                    "languages": lang_val,
+                    "languages_count": lang_val_count,
                 })
             logger.info(f"    Found {len(per_sheet)} distinct degree values in sheet.")
 
@@ -403,9 +426,10 @@ def collect_per_sheet(
 
     # build DataFrame with new column names
     df_out = pd.DataFrame(out_rows, columns=[
-        "degree", "degree_count", "filename", "sheet", "columns", "sources",
-        "taxonomies", "taxonomies_count", "specialities", "specialities_count",
-        "languages", "languages_count"
+        "degree_column_name", "degree", "degree_count", "filename", "sheet", "sources",
+        "taxonomy_column_name", "taxonomies", "taxonomies_count",
+        "speciality_column_name", "specialities", "specialities_count",
+        "language_column_name", "languages", "languages_count"
     ])
 
     total_degree_rows = len(df_out)
