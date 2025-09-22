@@ -1,22 +1,16 @@
 #!/usr/bin/env python3
 """
-extract_columns_by_keywords.py
+extract_columns_by_keywords.py (with defaults + interactive)
 
-Recursively scan a folder for Excel files, read every sheet, find column names
-that contain any of a set of keywords (case-insensitive substring match) and
-write a consolidated output Excel listing the matches.
+This version supports three ways to provide paths:
+ 1. Command-line arguments (preferred when running from terminal)
+ 2. Hardcoded defaults in the script (modify DEFAULT_ROOT_FOLDER / DEFAULT_OUTPUT_FILE)
+ 3. Interactive prompt (if neither CLI nor defaults are provided)
 
-Output columns (sheet 'matches'):
- - file_path: full path to the workbook
- - sheet_name: sheet name inside the workbook
- - column_name: the original column/header found in that sheet
- - matched_keyword: which keyword was matched (first match)
- - standard_column: the target output column name you assign for that keyword
-
-Usage examples:
-    python extract_columns_by_keywords.py /path/to/search output_matches.xlsx
-
-You can edit KEYWORD_MAP to change which keywords map to which output column.
+Examples:
+  - CLI (explicit): python extract_columns_by_keywords.py "C:\\data\\excels" "C:\\data\\out.xlsx"
+  - Hardcoded: set DEFAULT_ROOT_FOLDER and DEFAULT_OUTPUT_FILE below and run: python extract_columns_by_keywords.py
+  - Interactive: run without args and without defaults; the script will ask you to type paths.
 """
 
 import sys
@@ -27,9 +21,6 @@ import argparse
 import logging
 
 # ----- User-configurable mapping -----
-# Map a keyword (substring) to a standardized output column name.
-# Matching is case-insensitive and checks if the keyword appears anywhere in the header.
-# Add as many entries as you need. Order matters: first matching keyword is used.
 KEYWORD_MAP: Dict[str, str] = {
     "language": "language",
     "lang": "language",
@@ -37,22 +28,24 @@ KEYWORD_MAP: Dict[str, str] = {
     "spoken": "language",
     "degree": "degree",
     "qualification": "degree",
-    # add more as required
 }
 
 EXCEL_EXTS = {".xls", ".xlsx", ".xlsm", ".xlsb", ".odf", ".ods"}
 
+# ----- Defaults (edit these if you want to hardcode paths) -----
+# If you set these to non-empty strings, the script will use them when CLI args are not provided.
+# Use raw strings (r"C:\\path\\to\\folder") or double backslashes in Windows paths.
+DEFAULT_ROOT_FOLDER = ""  # e.g. r"C:\\Users\\YourName\\Documents\\excel_folder"
+DEFAULT_OUTPUT_FILE = ""  # e.g. r"C:\\Users\\YourName\\Documents\\output_matches.xlsx"
+
 # ----- Functions -----
 
 def find_excel_files(root: Path) -> List[Path]:
-    """Recursively yield excel files under root."""
     files = [p for p in root.rglob("*") if p.suffix.lower() in EXCEL_EXTS and p.is_file()]
     return files
 
 
 def match_header(header: str, keyword_map: Dict[str, str]) -> Tuple[str, str]:
-    """Return (matched_keyword, standard_column) for the first keyword that matches the header.
-    If no match, return ("", "")."""
     if header is None:
         return "", ""
     h = str(header).lower()
@@ -63,18 +56,14 @@ def match_header(header: str, keyword_map: Dict[str, str]) -> Tuple[str, str]:
 
 
 def process_workbook(path: Path, keyword_map: Dict[str, str]) -> List[Dict]:
-    """Read all sheets and collect matched column headers.
-    Returns a list of dicts suitable to create a DataFrame for output."""
     rows = []
     try:
-        # sheet_name=None loads all sheets into dict of DataFrames
-        xls = pd.read_excel(path, sheet_name=None, nrows=0)  # nrows=0 to only get headers fast
+        xls = pd.read_excel(path, sheet_name=None, nrows=0)
     except Exception as e:
         logging.warning(f"Failed to read {path}: {e}")
         return rows
 
     for sheet_name, df in xls.items():
-        # If nrows=0, pandas returns an empty DataFrame with columns
         headers = list(df.columns)
         for col in headers:
             kw, std = match_header(col, keyword_map)
@@ -105,7 +94,6 @@ def run(root_folder: Path, output_file: Path, keyword_map: Dict[str, str]):
     else:
         df_out = pd.DataFrame(all_rows)
 
-    # Optionally pivot or group later; for now just write matches.
     try:
         with pd.ExcelWriter(output_file, engine="openpyxl") as writer:
             df_out.to_excel(writer, sheet_name="matches", index=False)
@@ -114,12 +102,33 @@ def run(root_folder: Path, output_file: Path, keyword_map: Dict[str, str]):
         logging.error(f"Failed to write output excel {output_file}: {e}")
 
 
-# ----- CLI -----
+def resolve_paths(cli_root: str | None, cli_out: str | None) -> Tuple[Path, Path]:
+    # 1. CLI args
+    if cli_root and cli_out:
+        return Path(cli_root), Path(cli_out)
+
+    # 2. Defaults
+    if DEFAULT_ROOT_FOLDER and DEFAULT_OUTPUT_FILE:
+        return Path(DEFAULT_ROOT_FOLDER), Path(DEFAULT_OUTPUT_FILE)
+
+    # 3. Partial CLI
+    if cli_root and not cli_out:
+        out = input("Output file path (where to write results, e.g. C:\\out.xlsx): ").strip()
+        return Path(cli_root), Path(out)
+    if cli_out and not cli_root:
+        root = input("Root folder to scan for excel files: ").strip()
+        return Path(root), Path(cli_out)
+
+    # 4. Interactive prompt
+    root = input("Enter root folder to recursively scan for Excel files: ").strip()
+    out = input("Enter output Excel file path (will be overwritten if exists): ").strip()
+    return Path(root), Path(out)
+
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description="Extract columns matching keywords from many Excel files")
-    parser.add_argument("root_folder", help="Root folder to recursively scan for excel files")
-    parser.add_argument("output_file", help="Output Excel file path to write matches")
+    parser.add_argument("root_folder", nargs="?", help="Root folder to recursively scan for excel files")
+    parser.add_argument("output_file", nargs="?", help="Output Excel file path to write matches")
     parser.add_argument("--add-keyword", "-k", action="append", nargs=2, metavar=("KEY","STD"),
                         help="Add a keyword and its standard column name (can be used multiple times). Example: -k language language")
     parser.add_argument("--verbose", "-v", action="store_true", help="Verbose logging")
@@ -133,13 +142,21 @@ def main(argv=None):
         for k, s in args.add_keyword:
             km[k] = s
 
-    root = Path(args.root_folder)
-    if not root.exists():
-        logging.error(f"Root folder does not exist: {root}")
+    root_path, out_path = resolve_paths(args.root_folder, args.output_file)
+
+    if not root_path.exists():
+        logging.error(f"Root folder does not exist: {root_path}")
         sys.exit(2)
 
-    out = Path(args.output_file)
-    run(root, out, km)
+    if not out_path.parent.exists():
+        try:
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+            logging.info(f"Created output directory: {out_path.parent}")
+        except Exception as e:
+            logging.error(f"Failed to create output directory {out_path.parent}: {e}")
+            sys.exit(3)
+
+    run(root_path, out_path, km)
 
 
 if __name__ == "__main__":
