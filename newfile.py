@@ -2,10 +2,12 @@
 """
 Optimized collect_degrees_per_sheet.py
 
-Same behaviour as before but faster:
+Same behaviour as before but faster and corrected exclusion logic:
  - header detection reads only top N rows (default 20)
  - once header row is found, we read only the matched columns via usecols to avoid loading whole sheet
  - exact normalized header matching kept
+ - EXCLUDE_COLUMN_SUBSTRINGS are matched against the original header text (case-insensitive substring)
+   so entries like "Degree.1" or "Degree:" will be excluded reliably.
 """
 import argparse
 import logging
@@ -33,6 +35,7 @@ EXCLUDE_COLUMN_SUBSTRINGS = [
     "practice",
     "notes",
     "address",
+    # add "Degree.1", "Degree:" here (exact substring to exclude)
 ]
 # ------------------------------
 
@@ -161,9 +164,12 @@ def collect_per_sheet_fast(
     if verbose:
         logger.setLevel(logging.INFO)
 
+    # normalized candidate headers (for exact matching)
     cand_deg_norm = [normalize_header_for_match(c) for c in degree_candidates if c and str(c).strip()]
     cand_deg_norm = sorted(set(cand_deg_norm))
-    exclude_norm = [e.casefold().strip() for e in (exclude_list or []) if e and e.strip()]
+
+    # IMPORTANT: build exclude list for substring checks against original header text (case-insensitive)
+    exclude_raw = [e.casefold().strip() for e in (exclude_list or []) if e and e.strip()]
 
     patterns = ("*.xlsx", "*.xlsm")
     files = []
@@ -203,24 +209,27 @@ def collect_per_sheet_fast(
                 logger.info(f"    No valid headers detected within top {header_search_limit} rows (skipping sheet).")
                 continue
 
-            # map normalized header -> original header string
+            # map normalized header -> original header string, but skip headers that contain any exclude substring
             header_map: Dict[str, str] = {}
             for col in headers:
                 col_display = str(col)
+                col_lower = col_display.casefold()
+                # skip this header if it matches any exclude substring (case-insensitive) — this is the key fix
+                if any(exc in col_lower for exc in exclude_raw):
+                    logger.debug(f"    Excluding header '{col_display}' because it matches exclude substrings.")
+                    continue
                 col_norm = normalize_header_for_match(col_display)
                 header_map[col_norm] = col_display
 
-            # choose matched columns by exact normalized equality
-            matched_norms = [n for n in header_map.keys() if n in cand_deg_norm and not any(exc in n for exc in exclude_norm)]
+            # choose matched columns by exact normalized equality (no further exclude check needed)
+            matched_norms = [n for n in header_map.keys() if n in cand_deg_norm]
             if not matched_norms:
                 logger.info("    No exact-match degree columns found in this sheet.")
                 continue
 
-            # matched original header names (these are the strings that match after normalization)
             matched_cols = [header_map[n] for n in matched_norms]
 
             # Read only the matched columns from the sheet (fast)
-            # Use usecols with the original header names; pandas will match these after header row
             try:
                 df_sheet = pd.read_excel(f, sheet_name=sheet, header=hdr_idx, usecols=matched_cols, engine="openpyxl", dtype=str)
             except Exception as ex:
@@ -233,14 +242,13 @@ def collect_per_sheet_fast(
 
             # Build per-sheet aggregation
             per_sheet: Dict[str, Dict[str, object]] = {}
-            # For each column present in df_sheet (may be subset)
             for actual_col in df_sheet.columns:
                 actual_display = str(actual_col)
-                actual_norm = normalize_header_for_match(actual_display)
-                if any(exc in actual_norm for exc in exclude_norm):
+                # skip column if header contains any exclude substring (safety)
+                if any(exc in actual_display.casefold() for exc in exclude_raw):
+                    logger.debug(f"    Skipping column '{actual_display}' because it matches exclude substrings.")
                     continue
 
-                # series of cleaned strings
                 try:
                     series = df_sheet[actual_col].astype(str).fillna("").apply(normalize_text)
                 except Exception as ex:
@@ -411,7 +419,7 @@ def main():
         df_with = pd.DataFrame(run_info.get("files_with_data", []), columns=["filename"])
         df_without = pd.DataFrame(run_info.get("files_without_data", []), columns=["filename"])
         df_with.to_excel(writer, sheet_name="files_with_data", index=False)
-        df_without.to_excel(writer, sheet_name="files_without_data", index=False)
+        df_without.to_excel(writer, sheet_name="files_with_data", index=False)
 
     print(f"Done. Degrees workbook: {out_path} (rows: {len(df_res)})")
     print(f"Done. Log workbook: {log_excel_path}")
